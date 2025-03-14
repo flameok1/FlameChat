@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -12,62 +11,53 @@ import (
 )
 
 type Room struct {
-	ID      string `json:"roomid"`
-	Name    string `json:"roomname"`
-	Clients map[*Client]bool
-	mu      sync.Mutex
+	RoomID      string `json:"roomid"`
+	RoomName    string `json:"roomname"`
+	Clients     map[*websocket.Conn]bool
+	ChatHistory []ChatMessage
+	mutex       sync.Mutex
 }
 
-type Client struct {
-	conn *websocket.Conn
-	room *Room
-}
-
-type Message struct {
+type ChatMessage struct {
 	Protocol string `json:"protocol"`
-	RoomID   string `json:"roomid,omitempty"`
-	RoomName string `json:"roomname,omitempty"`
-	Status   string `json:"status,omitempty"`
-	Nickname string `json:"nickname,omitempty"`
-	Message  string `json:"message,omitempty"`
+	Nickname string `json:"nickname"`
+	Message  string `json:"message"`
+	Time     string `json:"time"`
 }
 
 var (
-	rooms    = make(map[string]*Room)
-	roomsMu  sync.Mutex
+	rooms = make(map[string]*Room)
+	mutex sync.Mutex
+
 	upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
-			return true // 允許所有來源的連接
+			return true
 		},
 	}
 )
 
 func main() {
+	http.HandleFunc("/getrooms", getRooms)
 	http.HandleFunc("/ws", handleWebSocket)
-	http.HandleFunc("/getrooms", handleGetRooms)
 
 	log.Println("Server starting on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-func handleGetRooms(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func getRooms(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
 
-	roomsMu.Lock()
-	roomList := make([]map[string]string, 0)
-	for _, room := range rooms {
+	roomList := []map[string]string{}
+	mutex.Lock()
+	for id, room := range rooms {
 		roomList = append(roomList, map[string]string{
-			"roomid":   room.ID,
-			"roomname": room.Name,
+			"roomid":   id,
+			"roomname": room.RoomName,
 		})
 	}
-	roomsMu.Unlock()
+	mutex.Unlock()
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(roomList)
 }
 
@@ -79,95 +69,141 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	client := &Client{conn: conn}
-
 	for {
-		var msg Message
+		var msg map[string]interface{}
 		err := conn.ReadJSON(&msg)
 		if err != nil {
 			log.Println("Read error:", err)
+			removeClientFromRooms(conn)
 			break
 		}
 
-		switch msg.Protocol {
+		protocol, _ := msg["protocol"].(string)
+		switch protocol {
 		case "openroom":
-			handleOpenRoom(client, &msg)
+			handleOpenRoom(conn, msg)
 		case "joinroom":
-			handleJoinRoom(client, &msg)
+			handleJoinRoom(conn, msg)
 		case "message":
-			handleChatMessage(client, &msg)
+			handleMessage(conn, msg)
 		}
 	}
 }
 
-func handleOpenRoom(client *Client, msg *Message) {
+func handleOpenRoom(conn *websocket.Conn, msg map[string]interface{}) {
+	roomName, _ := msg["roomname"].(string)
 	roomID := generateRoomID()
-	room := &Room{
-		ID:      roomID,
-		Name:    msg.RoomName,
-		Clients: make(map[*Client]bool),
+
+	mutex.Lock()
+	rooms[roomID] = &Room{
+		RoomID:      roomID,
+		RoomName:    roomName,
+		Clients:     make(map[*websocket.Conn]bool),
+		ChatHistory: make([]ChatMessage, 0),
 	}
+	room := rooms[roomID]
+	mutex.Unlock()
 
-	roomsMu.Lock()
-	rooms[roomID] = room
-	roomsMu.Unlock()
+	room.mutex.Lock()
+	room.Clients[conn] = true
+	room.mutex.Unlock()
 
-	room.mu.Lock()
-	room.Clients[client] = true
-	room.mu.Unlock()
-
-	client.room = room
-
-	response := Message{
-		Protocol: "resopenroom",
-		Status:   "ok",
-		RoomID:   roomID,
-	}
-	client.conn.WriteJSON(response)
-}
-
-func handleJoinRoom(client *Client, msg *Message) {
-	roomsMu.Lock()
-	room, exists := rooms[msg.RoomID]
-	roomsMu.Unlock()
-
-	if !exists {
-		client.conn.WriteJSON(Message{
-			Protocol: "resjoinroom",
-			Status:   "error",
-			Message:  "Room not found",
-		})
-		return
-	}
-
-	room.mu.Lock()
-	room.Clients[client] = true
-	room.mu.Unlock()
-
-	client.room = room
-
-	client.conn.WriteJSON(Message{
-		Protocol: "resjoinroom",
-		Status:   "ok",
+	conn.WriteJSON(map[string]interface{}{
+		"protocol": "resopenroom",
+		"status":   "ok",
+		"roomid":   roomID,
 	})
 }
 
-func handleChatMessage(client *Client, msg *Message) {
-	if client.room == nil {
+func handleJoinRoom(conn *websocket.Conn, msg map[string]interface{}) {
+	roomID, _ := msg["roomid"].(string)
+
+	mutex.Lock()
+	room, exists := rooms[roomID]
+	mutex.Unlock()
+
+	if !exists {
+		conn.WriteJSON(map[string]interface{}{
+			"protocol": "resjoinroom",
+			"status":   "error",
+			"message":  "Room not found",
+		})
 		return
 	}
 
-	client.room.mu.Lock()
-	for c := range client.room.Clients {
-		c.conn.WriteJSON(Message{
-			Protocol: "message",
-			Nickname: msg.Nickname,
-			Message:  msg.Message,
-		})
+	room.mutex.Lock()
+	room.Clients[conn] = true
+	chatHistory := room.ChatHistory
+	room.mutex.Unlock()
+
+	conn.WriteJSON(map[string]interface{}{
+		"protocol":    "resjoinroom",
+		"status":      "ok",
+		"chathistory": chatHistory,
+	})
+}
+
+func handleMessage(conn *websocket.Conn, msg map[string]interface{}) {
+	roomID := findRoomIDByClient(conn)
+	if roomID == "" {
+		return
 	}
-	client.room.mu.Unlock()
+
+	mutex.Lock()
+	room := rooms[roomID]
+	mutex.Unlock()
+
+	chatMsg := ChatMessage{
+		Protocol: "message",
+		Nickname: msg["nickname"].(string),
+		Message:  msg["message"].(string),
+		Time:     time.Now().Format("15:04:05"),
+	}
+
+	room.mutex.Lock()
+	// 管理历史记录，最多保存200条
+	if len(room.ChatHistory) >= 200 {
+		room.ChatHistory = room.ChatHistory[1:]
+	}
+	room.ChatHistory = append(room.ChatHistory, chatMsg)
+
+	// 广播消息给所有客户端
+	for client := range room.Clients {
+		err := client.WriteJSON(chatMsg)
+		if err != nil {
+			log.Printf("Broadcast error: %v", err)
+			delete(room.Clients, client)
+			client.Close()
+		}
+	}
+	room.mutex.Unlock()
+}
+
+func removeClientFromRooms(conn *websocket.Conn) {
+	mutex.Lock()
+	for _, room := range rooms {
+		room.mutex.Lock()
+		delete(room.Clients, conn)
+		room.mutex.Unlock()
+	}
+	mutex.Unlock()
+}
+
+func findRoomIDByClient(conn *websocket.Conn) string {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	for roomID, room := range rooms {
+		room.mutex.Lock()
+		if _, exists := room.Clients[conn]; exists {
+			room.mutex.Unlock()
+			return roomID
+		}
+		room.mutex.Unlock()
+	}
+	return ""
 }
 
 func generateRoomID() string {
-	return fmt.Sprintf("room_%d", time.Now().UnixNano())
+	return time.Now().Format("20060102150405")
 }

@@ -121,6 +121,13 @@ const joinRoom = (roomId) => {
       if (room) {
         currentRoom.value = room
         inChatRoom.value = true
+        if (data.chathistory && Array.isArray(data.chathistory)) {
+          messages.value = data.chathistory.map(msg => ({
+            nickname: msg.nickname,
+            message: msg.message,
+            time: msg.time
+          }))
+        }
         setupChatHandlers()
       }
     }
@@ -295,12 +302,12 @@ onMounted(() => {
 }
 
 .message-container.self .message-box {
-  background: #e3f2fd;
+  background: #8ad690;
   margin-right: 20%;
 }
 
 .message-container.other .message-box {
-  background: #f5f5f5;
+  background: #9ed7ff;
   margin-left: 20%;
 }
 
