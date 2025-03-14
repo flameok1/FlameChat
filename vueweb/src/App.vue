@@ -68,7 +68,7 @@ const messagesContainer = ref(null)
 // 獲取房間列表
 const fetchRooms = async () => {
   try {
-    const response = await fetch('http://localhost:8080/getrooms')
+    const response = await fetch('/api/getrooms')
     rooms.value = await response.json()
   } catch (error) {
     console.error('Error fetching rooms:', error)
@@ -79,7 +79,7 @@ const fetchRooms = async () => {
 const createRoom = () => {
   if (!newRoomName.value) return
   
-  ws.value = new WebSocket('ws://localhost:8080/ws')
+  ws.value = new WebSocket('/api/ws')
   
   ws.value.onopen = () => {
     ws.value.send(JSON.stringify({
@@ -105,7 +105,7 @@ const createRoom = () => {
 
 // 加入房間
 const joinRoom = (roomId) => {
-  ws.value = new WebSocket('ws://localhost:8080/ws')
+  ws.value = new WebSocket('/api/ws')
   
   ws.value.onopen = () => {
     ws.value.send(JSON.stringify({

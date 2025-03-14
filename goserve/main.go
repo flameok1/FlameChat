@@ -40,8 +40,8 @@ func main() {
 	http.HandleFunc("/getrooms", getRooms)
 	http.HandleFunc("/ws", handleWebSocket)
 
-	log.Println("Server starting on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Println("Server starting on :8081")
+	log.Fatal(http.ListenAndServe(":8081", nil))
 }
 
 func getRooms(w http.ResponseWriter, r *http.Request) {
